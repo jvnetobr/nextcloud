@@ -1,67 +1,97 @@
-version: '3.9'
+version: '3.8'
+
+networks:
+  DMZ-INGRESS:
+    external: true
+
+# Configuração comum para os serviços
+x-common-settings: &common-settings
+  logging:
+    driver: "json-file"
+    options:
+      max-file: "2"
+      max-size: "10M"
+
+  networks:
+    - DMZ-INGRESS
+
+  deploy: &common-deploy
+    replicas: 1
+    resources:
+      limits:
+        cpus: '0.50'
+    placement:
+      constraints:
+        - "node.labels.node_type != loadbalancer"
+    update_config:
+      order: start-first
 
 services:
-  db:
+  nextcloud-db:
+    <<: *common-settings
     image: mysql:8.0
     restart: always
-    command: --transaction-isolation=READ-COMMITTED --innodb-read-only-compressed=OFF
     volumes:
-      - db:/var/lib/mysql
+      - /mnt/gfs/volumes/GERAL/docker-stacks/nextcloud/db:/var/lib/mysql
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
       - MYSQL_USER=${MYSQL_USER}
+    deploy:
+      <<: *common-deploy
+      update_config:
+        order: stop-first
 
-  redis:
+  nextcloud-redis:
+    <<: *common-settings
     image: redis:alpine
     restart: always
     volumes:
-      - redis:/data
+      - /mnt/gfs/volumes/GERAL/docker-stacks/nextcloud/redis:/data
+    deploy:
+      <<: *common-deploy
 
-  app:
+  nextcloud-app:
+    <<: *common-settings
     image: nextcloud:fpm
     restart: always
     depends_on:
-      - redis
-      - db
+      - nextcloud_nextcloud-redis
+      - nextcloud_nextcloud-db
     volumes:
-      - nextcloud:/var/www/html
+      - /mnt/gfs/volumes/GERAL/docker-stacks/nextcloud/nextcloud:/var/www/html
     environment:
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
       - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_HOST=db
-      - REDIS_HOST=redis
+      - MYSQL_HOST=nextcloud_nextcloud-db
+      - REDIS_HOST=nextcloud_nextcloud-redis
       - NEXTCLOUD_ADMIN_USER=${NEXTCLOUD_ADMIN_USER}
       - NEXTCLOUD_ADMIN_PASSWORD=${NEXTCLOUD_ADMIN_PASSWORD}
       - TRUSTED_PROXIES=traefik
-      - OVERWRITECLIURL=https://${TRAEFIK_DOMAIN}
-      - NEXTCLOUD_TRUSTED_DOMAINS=${TRAEFIK_DOMAIN}
+      - OVERWRITECLIURL=https://${NEXTCLOUD_TRUSTED_DOMAINS}
+      - NEXTCLOUD_TRUSTED_DOMAINS=${NEXTCLOUD_TRUSTED_DOMAINS}
+    deploy:
+      <<: *common-deploy
 
-  web:
+  nextcloud-web:
+    <<: *common-settings
     image: nginx:alpine
     restart: always
     depends_on:
-      - app
+      - nextcloud_nextcloud-app
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - nextcloud:/var/www/html:ro
-    networks:
-      - traefik_net
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.nextcloud.rule=Host(`${TRAEFIK_DOMAIN}`)"
-      - "traefik.http.routers.nextcloud.entrypoints=websecure"
-      - "traefik.http.routers.nextcloud.tls=true"
-      - "traefik.http.routers.nextcloud.tls.certresolver=myresolver"
-      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
-
-networks:
-  traefik_net:
-    external: true
-
-volumes:
-  nextcloud:
-  db:
-  redis:
+      - /mnt/gfs/volumes/GERAL/docker-stacks/nextcloud/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /mnt/gfs/volumes/GERAL/docker-stacks/nextcloud/nextcloud:/var/www/html:ro
+    
+    deploy:
+      <<: *common-deploy
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.nextcloud-web.rule=Host(`drive.exemplo.com.br`)"
+        - "traefik.http.routers.nextcloud-web.entryPoints=DEFAULT-HTTPS"
+        - "traefik.http.routers.nextcloud-web.tls=true"
+        - "traefik.http.routers.nextcloud-web.service=nextcloud-web"
+        - "traefik.http.services.nextcloud-web.loadbalancer.server.port=80"
+        - "traefik.http.services.nextcloud-web.loadbalancer.server.scheme=http"
